@@ -1,19 +1,3 @@
-# requirements.txt
-"""
-streamlit==1.29.0
-pydub==0.25.1
-yt-dlp==2023.12.30
-pytube==15.0.0
-numpy==1.24.3
-scipy==1.10.1
-matplotlib==3.7.2
-plotly==5.17.0
-streamlit-player==0.1.6
-st_audiorec==0.0.7
-streamlit-extras==0.4.0
-"""
-
-# app.py
 import streamlit as st
 import os
 import tempfile
@@ -22,7 +6,6 @@ import numpy as np
 import plotly.graph_objects as go
 from io import BytesIO
 import base64
-import time
 
 # Audio processing imports
 from pydub import AudioSegment
@@ -84,8 +67,6 @@ if 'audio_file' not in st.session_state:
     st.session_state.audio_file = None
 if 'edited_audio' not in st.session_state:
     st.session_state.edited_audio = None
-if 'sample_rate' not in st.session_state:
-    st.session_state.sample_rate = None
 
 def get_audio_duration(audio):
     """Get audio duration in seconds"""
@@ -225,7 +206,8 @@ def main():
         
         input_method = st.radio(
             "Choose input method:",
-            ["Upload Audio File", "YouTube URL"]
+            ["Upload Audio File", "YouTube URL"],
+            horizontal=True
         )
         
         audio_loaded = False
@@ -425,33 +407,6 @@ def main():
             current_audio = st.session_state.edited_audio if st.session_state.edited_audio else audio
             fig = plot_waveform(current_audio)
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Audio spectrum analysis option
-            if st.button("Generate Spectrum Analysis", key="spectrum_button"):
-                with st.spinner("Generating spectrum..."):
-                    # Simple spectrum visualization
-                    samples = np.array(current_audio.get_array_of_samples())
-                    if len(samples) > 0:
-                        # Take FFT
-                        fft_result = np.fft.fft(samples[:min(len(samples), 44100)])
-                        freq = np.fft.fftfreq(len(fft_result), 1/44100)
-                        
-                        fig2 = go.Figure()
-                        fig2.add_trace(go.Scatter(
-                            x=freq[:len(freq)//2],
-                            y=np.abs(fft_result[:len(freq)//2]),
-                            mode='lines',
-                            line=dict(color='#FF5722', width=1)
-                        ))
-                        
-                        fig2.update_layout(
-                            title="Frequency Spectrum",
-                            xaxis_title="Frequency (Hz)",
-                            yaxis_title="Magnitude",
-                            height=300
-                        )
-                        
-                        st.plotly_chart(fig2, use_container_width=True)
         
         # Audio player section
         st.markdown("---")
