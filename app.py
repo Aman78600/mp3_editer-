@@ -1,564 +1,261 @@
 import streamlit as st
 import os
-import tempfile
-from pathlib import Path
-import numpy as np
-import plotly.graph_objects as go
-from io import BytesIO
-import base64
-
-# Audio processing imports
 from pydub import AudioSegment
-from pydub.effects import normalize, compress_dynamic_range, high_pass_filter, low_pass_filter
-import yt_dlp as youtube_dl
-from pytube import YouTube
-import warnings
-warnings.filterwarnings('ignore')
+from pydub.effects import normalize, compress_dynamic_range
+import yt_dlp
+import tempfile
+import io
 
-# Set page config
-st.set_page_config(
-    page_title="Audio Editor Pro",
-    page_icon="🎵",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Audio Editor", page_icon="🎵", layout="wide")
 
 # Custom CSS
 st.markdown("""
-<style>
+    <style>
     .main-header {
-        font-size: 2.5rem;
-        color: #4CAF50;
+        font-size: 3rem;
+        font-weight: bold;
         text-align: center;
         margin-bottom: 2rem;
     }
-    .sub-header {
-        font-size: 1.5rem;
-        color: #2196F3;
-        margin-top: 1.5rem;
-        margin-bottom: 1rem;
-    }
-    .stButton button {
-        width: 100%;
-        background-color: #4CAF50;
-        color: white;
-        font-weight: bold;
-    }
-    .stDownloadButton button {
-        background-color: #2196F3;
-        color: white;
-    }
-    .audio-player {
-        margin: 20px 0;
-        padding: 20px;
-        background-color: #f5f5f5;
-        border-radius: 10px;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #4CAF50;
-    }
-</style>
+    </style>
 """, unsafe_allow_html=True)
+
+st.markdown('<h1 class="main-header">🎵 Audio Editor</h1>', unsafe_allow_html=True)
 
 # Initialize session state
 if 'audio' not in st.session_state:
     st.session_state.audio = None
-if 'audio_file' not in st.session_state:
-    st.session_state.audio_file = None
-if 'edited_audio' not in st.session_state:
-    st.session_state.edited_audio = None
+if 'original_audio' not in st.session_state:
+    st.session_state.original_audio = None
+if 'filename' not in st.session_state:
+    st.session_state.filename = "edited_audio.mp3"
 
-def get_audio_duration(audio):
-    """Get audio duration in seconds"""
-    return len(audio) / 1000.0
-
-def plot_waveform(audio):
-    """Create waveform visualization"""
-    samples = np.array(audio.get_array_of_samples())
-    
-    if audio.channels == 2:
-        samples = samples.reshape((-1, 2))
-        samples = samples.mean(axis=1)
-    
-    # Downsample for performance
-    if len(samples) > 50000:
-        step = len(samples) // 50000
-        samples = samples[::step]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        y=samples,
-        mode='lines',
-        line=dict(color='#4CAF50', width=1),
-        name='Waveform'
-    ))
-    
-    fig.update_layout(
-        height=200,
-        margin=dict(l=0, r=0, t=0, b=0),
-        xaxis=dict(showgrid=False, zeroline=False, visible=False),
-        yaxis=dict(showgrid=True, gridcolor='lightgray', zeroline=True),
-        plot_bgcolor='white',
-        paper_bgcolor='white'
-    )
-    
-    return fig
-
-def download_from_youtube(url):
-    """Download audio from YouTube URL"""
+def download_youtube_audio(url):
+    """Download audio from YouTube"""
     try:
-        with st.spinner("Downloading audio from YouTube..."):
-            # Create temp directory
-            temp_dir = tempfile.mkdtemp()
-            
-            # Download using yt-dlp with simpler settings
+        with tempfile.TemporaryDirectory() as temp_dir:
             ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio',
-                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': os.path.join(temp_dir, 'audio.%(ext)s'),
                 'quiet': True,
-                'no_warnings': True,
-                'postprocessors': [],
             }
             
-            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                audio_path = ydl.prepare_filename(info)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
             
-            # Load audio - try different formats
-            try:
-                audio = AudioSegment.from_file(audio_path)
-            except:
-                # If direct loading fails, convert to mp3
-                audio = AudioSegment.from_file(audio_path).set_frame_rate(44100).set_channels(2)
-            
-            # Clean up
-            try:
-                os.remove(audio_path)
-            except:
-                pass
-            
-            return audio, info.get('title', 'youtube_audio')
-    
+            audio_file = os.path.join(temp_dir, 'audio.mp3')
+            audio = AudioSegment.from_mp3(audio_file)
+            return audio
     except Exception as e:
-        st.error(f"Error downloading from YouTube: {str(e)}")
-        st.info("Tip: Make sure the YouTube URL is valid and the video is not age-restricted or private.")
-        return None, None
+        st.error(f"Error downloading YouTube audio: {str(e)}")
+        return None
 
-def process_audio_file(uploaded_file):
-    """Process uploaded audio file"""
+def load_audio(file):
+    """Load audio file"""
     try:
-        # Create temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-        
-        # Load audio
-        audio = AudioSegment.from_file(tmp_path)
-        
-        # Clean up
-        os.unlink(tmp_path)
-        
-        return audio, uploaded_file.name
-    
+        audio = AudioSegment.from_file(file)
+        return audio
     except Exception as e:
-        st.error(f"Error processing audio file: {str(e)}")
-        return None, None
+        st.error(f"Error loading audio: {str(e)}")
+        return None
 
-def apply_fade(audio, fade_in_duration, fade_out_duration):
-    """Apply fade in and fade out effects"""
-    if fade_in_duration > 0:
-        audio = audio.fade_in(int(fade_in_duration * 1000))
-    if fade_out_duration > 0:
-        audio = audio.fade_out(int(fade_out_duration * 1000))
-    return audio
+def export_audio(audio, format="mp3"):
+    """Export audio to bytes"""
+    buffer = io.BytesIO()
+    audio.export(buffer, format=format)
+    buffer.seek(0)
+    return buffer
 
-def apply_normalization(audio, target_dBFS):
-    """Normalize audio to target dBFS"""
-    return normalize(audio, headroom=target_dBFS)
-
-def get_download_link(audio, filename, format='mp3'):
-    """Generate download link for audio file"""
-    try:
-        # Export audio to bytes
-        buffer = BytesIO()
-        
-        if format == 'mp3':
-            audio.export(buffer, format='mp3', bitrate='192k')
-            mime_type = 'audio/mpeg'
-            file_ext = 'mp3'
-        elif format == 'wav':
-            audio.export(buffer, format='wav')
-            mime_type = 'audio/wav'
-            file_ext = 'wav'
-        
-        buffer.seek(0)
-        
-        # Create download link
-        b64 = base64.b64encode(buffer.read()).decode()
-        href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{file_ext}" style="display: inline-block; padding: 10px 20px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">Download {file_ext.upper()}</a>'
-        return href
-    except Exception as e:
-        return f"<p style='color: red;'>Error generating download link: {str(e)}</p>"
-
-def main():
-    st.markdown('<h1 class="main-header">🎵 Audio Editor Pro</h1>', unsafe_allow_html=True)
+# Sidebar for input
+with st.sidebar:
+    st.header("📥 Input Source")
     
-    # Sidebar for input
-    with st.sidebar:
-        st.markdown('<h3 class="sub-header">📥 Input Source</h3>', unsafe_allow_html=True)
-        
-        input_method = st.radio(
-            "Choose input method:",
-            ["Upload Audio File", "YouTube URL"],
-            horizontal=True
-        )
-        
-        audio_loaded = False
-        
-        if input_method == "Upload Audio File":
-            uploaded_file = st.file_uploader(
-                "Upload audio file",
-                type=['mp3', 'wav', 'm4a', 'ogg', 'flac']
-            )
-            
-            if uploaded_file is not None:
-                with st.spinner("Loading audio file..."):
-                    audio, filename = process_audio_file(uploaded_file)
-                    if audio is not None:
-                        st.session_state.audio = audio
-                        st.session_state.audio_file = filename
-                        audio_loaded = True
-        
-        else:  # YouTube URL
-            youtube_url = st.text_input("Enter YouTube URL:")
-            if youtube_url:
-                if st.button("Download from YouTube", use_container_width=True):
-                    audio, title = download_from_youtube(youtube_url)
-                    if audio is not None:
-                        st.session_state.audio = audio
-                        st.session_state.audio_file = title or "youtube_audio"
-                        audio_loaded = True
-        
-        # Audio info display
-        if audio_loaded:
-            st.markdown("---")
-            st.markdown('<h4 class="sub-header">📊 Audio Info</h4>', unsafe_allow_html=True)
-            
-            duration = get_audio_duration(st.session_state.audio)
-            channels = st.session_state.audio.channels
-            sample_width = st.session_state.audio.sample_width
-            frame_rate = st.session_state.audio.frame_rate
-            
-            st.write(f"**Duration:** {duration:.2f} seconds")
-            st.write(f"**Channels:** {channels}")
-            st.write(f"**Sample Width:** {sample_width * 8} bits")
-            st.write(f"**Frame Rate:** {frame_rate} Hz")
-            
-            # Quick preview
-            try:
-                audio_bytes = st.session_state.audio.export(format='mp3').read()
-                st.audio(audio_bytes)
-            except:
-                st.warning("Could not generate audio preview")
+    input_method = st.radio("Choose input method:", ["Upload File", "YouTube Link"])
     
-    # Main editing interface
-    if st.session_state.audio is not None:
-        audio = st.session_state.audio
-        duration = get_audio_duration(audio)
+    if input_method == "Upload File":
+        uploaded_file = st.file_uploader("Upload audio file", type=['mp3', 'wav', 'ogg', 'flac', 'm4a'])
         
-        st.markdown('<h3 class="sub-header">✂️ Audio Editing Tools</h3>', unsafe_allow_html=True)
-        
-        # Create tabs for different editing functions
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "✂️ Trim/Cut", "🎚️ Effects", "📊 Normalize", "🔊 Fade", "📈 Visualize"
-        ])
-        
-        with tab1:
-            st.markdown("**Trim Audio**")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                start_time = st.slider(
-                    "Start time (seconds)",
-                    0.0, duration, 0.0, 0.1,
-                    key="trim_start"
-                )
-            
-            with col2:
-                end_time = st.slider(
-                    "End time (seconds)",
-                    0.0, duration, duration, 0.1,
-                    key="trim_end"
-                )
-            
-            if st.button("Apply Trim", key="trim_button", use_container_width=True):
-                if start_time < end_time:
-                    st.session_state.edited_audio = audio[start_time * 1000:end_time * 1000]
-                    st.success(f"Audio trimmed to {start_time:.1f}s - {end_time:.1f}s")
-                else:
-                    st.error("Start time must be less than end time")
-        
-        with tab2:
-            st.markdown("**Audio Effects**")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Volume adjustment
-                volume_change = st.slider(
-                    "Volume Change (dB)",
-                    -20.0, 20.0, 0.0, 0.1
-                )
-                
-                # Speed adjustment
-                speed_factor = st.slider(
-                    "Playback Speed",
-                    0.5, 2.0, 1.0, 0.1
-                )
-            
-            with col2:
-                # High pass filter
-                hp_freq = st.slider(
-                    "High Pass Filter (Hz)",
-                    20, 5000, 20, 10
-                )
-                
-                # Low pass filter
-                lp_freq = st.slider(
-                    "Low Pass Filter (Hz)",
-                    100, 20000, 20000, 100
-                )
-            
-            if st.button("Apply Effects", key="effects_button", use_container_width=True):
-                edited = audio
-                
-                # Apply volume change
-                if volume_change != 0:
-                    edited = edited + volume_change
-                
-                # Apply speed change
-                if speed_factor != 1.0:
-                    edited = edited._spawn(
-                        edited.raw_data,
-                        overrides={
-                            "frame_rate": int(edited.frame_rate * speed_factor)
-                        }
-                    )
-                    edited = edited.set_frame_rate(audio.frame_rate)
-                
-                # Apply filters
-                if hp_freq > 20:
-                    edited = high_pass_filter(edited, hp_freq)
-                if lp_freq < 20000:
-                    edited = low_pass_filter(edited, lp_freq)
-                
-                st.session_state.edited_audio = edited
-                st.success("Effects applied successfully!")
-        
-        with tab3:
-            st.markdown("**Normalization & Compression**")
-            
-            target_level = st.slider(
-                "Target Loudness (dBFS)",
-                -30.0, -5.0, -20.0, 0.1
-            )
-            
-            compression = st.checkbox("Apply Compression")
-            
-            if compression:
-                threshold = st.slider(
-                    "Compression Threshold (dBFS)",
-                    -40.0, -10.0, -20.0, 1.0
-                )
-                ratio = st.slider(
-                    "Compression Ratio",
-                    1.0, 10.0, 4.0, 0.1
-                )
-            
-            if st.button("Apply Normalization", key="norm_button", use_container_width=True):
-                edited = apply_normalization(audio, target_level)
-                
-                if compression:
-                    # Simple compression using pydub
-                    edited = compress_dynamic_range(edited, threshold=threshold, ratio=ratio)
-                
-                st.session_state.edited_audio = edited
-                st.success("Normalization applied successfully!")
-        
-        with tab4:
-            st.markdown("**Fade In/Out Effects**")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fade_in = st.slider(
-                    "Fade In Duration (seconds)",
-                    0.0, 10.0, 0.0, 0.1
-                )
-            
-            with col2:
-                fade_out = st.slider(
-                    "Fade Out Duration (seconds)",
-                    0.0, 10.0, 0.0, 0.1
-                )
-            
-            if st.button("Apply Fade", key="fade_button", use_container_width=True):
-                edited = apply_fade(audio, fade_in, fade_out)
-                st.session_state.edited_audio = edited
-                st.success(f"Fade In: {fade_in}s, Fade Out: {fade_out}s applied!")
-        
-        with tab5:
-            st.markdown("**Audio Visualization**")
-            
-            # Display waveform
-            current_audio = st.session_state.edited_audio if st.session_state.edited_audio else audio
-            fig = plot_waveform(current_audio)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Audio player section
-        st.markdown("---")
-        st.markdown('<h3 class="sub-header">🎧 Preview & Download</h3>', unsafe_allow_html=True)
-        
-        # Determine which audio to display
-        display_audio = st.session_state.edited_audio if st.session_state.edited_audio else audio
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.markdown("**Original Audio**")
-            try:
-                audio_bytes = audio.export(format='mp3').read()
-                st.audio(audio_bytes)
-            except:
-                st.warning("Could not generate audio preview")
-        
-        with col2:
-            st.markdown("**Edited Audio**")
-            try:
-                edited_bytes = display_audio.export(format='mp3').read()
-                st.audio(edited_bytes)
-            except:
-                st.warning("Could not generate edited audio preview")
-        
-        # Download section
-        st.markdown("---")
-        st.markdown('<h4 class="sub-header">💾 Download Options</h4>', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            default_name = Path(st.session_state.audio_file).stem if st.session_state.audio_file else "audio"
-            filename = st.text_input(
-                "Download filename",
-                value=default_name + "_edited"
-            )
-        
-        with col2:
-            format_choice = st.selectbox(
-                "Format",
-                ["mp3", "wav"]
-            )
-        
-        # Generate download links
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Download Original**")
-            try:
-                original_link = get_download_link(audio, filename + "_original", format_choice)
-                st.markdown(original_link, unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Error creating download link: {str(e)}")
-        
-        with col2:
-            st.markdown("**Download Edited**")
-            try:
-                edited_link = get_download_link(display_audio, filename, format_choice)
-                st.markdown(edited_link, unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Error creating download link: {str(e)}")
-        
-        # Reset button
-        if st.button("Reset All Edits", type="secondary", use_container_width=True):
-            st.session_state.edited_audio = None
-            st.rerun()
+        if uploaded_file and st.button("Load Audio"):
+            with st.spinner("Loading audio..."):
+                audio = load_audio(uploaded_file)
+                if audio:
+                    st.session_state.audio = audio
+                    st.session_state.original_audio = audio
+                    st.session_state.filename = uploaded_file.name.rsplit('.', 1)[0] + "_edited.mp3"
+                    st.success("Audio loaded successfully!")
     
     else:
-        # Welcome screen when no audio loaded
-        st.markdown("""
-        <div style='text-align: center; padding: 50px;'>
-            <h2>Welcome to Audio Editor Pro! 🎵</h2>
-            <p style='font-size: 1.2rem;'>
-                Upload an audio file or paste a YouTube link to start editing.
-            </p>
-            <div style='margin-top: 30px;'>
-                <p><strong>Supported Features:</strong></p>
-                <ul style='text-align: left; display: inline-block;'>
-                    <li>Trim and cut audio segments</li>
-                    <li>Apply audio effects (volume, speed, filters)</li>
-                    <li>Normalize and compress audio</li>
-                    <li>Add fade in/out effects</li>
-                    <li>Visualize audio waveform</li>
-                    <li>Export in MP3 or WAV format</li>
-                </ul>
-            </div>
-            <div style='margin-top: 30px; padding: 20px; background-color: #f5f5f5; border-radius: 10px;'>
-                <h4>⚠️ Important Notes:</h4>
-                <ul style='text-align: left; display: inline-block;'>
-                    <li>Max file size: 200MB</li>
-                    <li>YouTube downloads may not work for all videos</li>
-                    <li>Processing large files may take time</li>
-                </ul>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        youtube_url = st.text_input("Enter YouTube URL:")
         
-        # Quick demo option
-        st.markdown("---")
-        col1, col2, col3 = st.columns(3)
+        if youtube_url and st.button("Download Audio"):
+            with st.spinner("Downloading from YouTube..."):
+                audio = download_youtube_audio(youtube_url)
+                if audio:
+                    st.session_state.audio = audio
+                    st.session_state.original_audio = audio
+                    st.session_state.filename = "youtube_audio_edited.mp3"
+                    st.success("Audio downloaded successfully!")
+    
+    st.divider()
+    
+    if st.session_state.audio:
+        st.info(f"Duration: {len(st.session_state.audio) / 1000:.2f}s")
+        st.info(f"Channels: {st.session_state.audio.channels}")
+        st.info(f"Sample Rate: {st.session_state.audio.frame_rate}Hz")
+
+# Main content area
+if st.session_state.audio:
+    tabs = st.tabs(["✂️ Trim", "🔗 Merge", "🎚️ Effects", "📊 Export"])
+    
+    # Trim Tab
+    with tabs[0]:
+        st.subheader("Trim Audio")
+        
+        col1, col2 = st.columns(2)
+        
+        max_duration = len(st.session_state.audio) / 1000
+        
+        with col1:
+            start_time = st.number_input("Start time (seconds)", min_value=0.0, max_value=max_duration, value=0.0, step=0.1)
         
         with col2:
-            if st.button("🎵 Try Sample Audio", type="primary", use_container_width=True):
-                # Create a simple demo audio without using generators
-                st.info("Creating sample audio...")
+            end_time = st.number_input("End time (seconds)", min_value=0.0, max_value=max_duration, value=max_duration, step=0.1)
+        
+        if st.button("Apply Trim"):
+            if start_time < end_time:
+                st.session_state.audio = st.session_state.original_audio[start_time * 1000:end_time * 1000]
+                st.success(f"Audio trimmed to {start_time}s - {end_time}s")
+            else:
+                st.error("Start time must be less than end time")
+    
+    # Merge Tab
+    with tabs[1]:
+        st.subheader("Merge with Another Audio")
+        
+        merge_file = st.file_uploader("Upload audio to merge", type=['mp3', 'wav', 'ogg', 'flac'], key="merge")
+        
+        merge_position = st.selectbox("Merge position:", ["Append (End)", "Prepend (Start)", "Overlay"])
+        
+        if merge_file and st.button("Merge Audio"):
+            with st.spinner("Merging audio..."):
+                merge_audio = load_audio(merge_file)
+                if merge_audio:
+                    if merge_position == "Append (End)":
+                        st.session_state.audio = st.session_state.audio + merge_audio
+                    elif merge_position == "Prepend (Start)":
+                        st.session_state.audio = merge_audio + st.session_state.audio
+                    else:  # Overlay
+                        st.session_state.audio = st.session_state.audio.overlay(merge_audio)
+                    st.success("Audio merged successfully!")
+    
+    # Effects Tab
+    with tabs[2]:
+        st.subheader("Audio Effects")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Volume**")
+            volume_change = st.slider("Volume (dB)", min_value=-30, max_value=30, value=0, step=1)
+            
+            st.markdown("**Speed**")
+            speed = st.slider("Speed", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
+        
+        with col2:
+            st.markdown("**Fade**")
+            fade_in = st.number_input("Fade in (ms)", min_value=0, max_value=5000, value=0, step=100)
+            fade_out = st.number_input("Fade out (ms)", min_value=0, max_value=5000, value=0, step=100)
+        
+        effects_col1, effects_col2 = st.columns(2)
+        
+        with effects_col1:
+            normalize_audio = st.checkbox("Normalize Audio")
+        
+        with effects_col2:
+            reverse_audio = st.checkbox("Reverse Audio")
+        
+        if st.button("Apply Effects"):
+            with st.spinner("Applying effects..."):
+                audio = st.session_state.audio
                 
-                # Create a simple tone using numpy
-                duration_ms = 3000  # 3 seconds
-                sample_rate = 44100
-                t = np.linspace(0, duration_ms/1000, int(sample_rate * duration_ms/1000), False)
+                # Volume
+                if volume_change != 0:
+                    audio = audio + volume_change
                 
-                # Generate 440 Hz sine wave
-                tone_data = np.sin(2 * np.pi * 440 * t) * 32767 * 0.5
+                # Speed
+                if speed != 1.0:
+                    audio = audio._spawn(audio.raw_data, overrides={
+                        "frame_rate": int(audio.frame_rate * speed)
+                    }).set_frame_rate(audio.frame_rate)
                 
-                # Convert to int16
-                tone_data = tone_data.astype(np.int16)
+                # Fade
+                if fade_in > 0:
+                    audio = audio.fade_in(fade_in)
+                if fade_out > 0:
+                    audio = audio.fade_out(fade_out)
                 
-                # Create stereo audio
-                stereo_data = np.column_stack((tone_data, tone_data))
+                # Normalize
+                if normalize_audio:
+                    audio = normalize(audio)
                 
-                # Create AudioSegment from numpy array
-                audio_segment = AudioSegment(
-                    stereo_data.tobytes(),
-                    frame_rate=sample_rate,
-                    sample_width=2,  # 16-bit = 2 bytes
-                    channels=2
+                # Reverse
+                if reverse_audio:
+                    audio = audio.reverse()
+                
+                st.session_state.audio = audio
+                st.success("Effects applied successfully!")
+    
+    # Export Tab
+    with tabs[3]:
+        st.subheader("Export Audio")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            export_format = st.selectbox("Export format:", ["mp3", "wav", "ogg"])
+        
+        with col2:
+            filename = st.text_input("Filename:", value=st.session_state.filename)
+        
+        if st.button("Generate Download"):
+            with st.spinner("Preparing download..."):
+                audio_bytes = export_audio(st.session_state.audio, format=export_format)
+                
+                st.download_button(
+                    label=f"⬇️ Download {export_format.upper()}",
+                    data=audio_bytes,
+                    file_name=f"{filename.rsplit('.', 1)[0]}.{export_format}",
+                    mime=f"audio/{export_format}"
                 )
-                
-                st.session_state.audio = audio_segment
-                st.session_state.audio_file = "sample_tone"
-                st.rerun()
+                st.success("Ready to download!")
+        
+        st.divider()
+        
+        if st.button("🔄 Reset to Original"):
+            st.session_state.audio = st.session_state.original_audio
+            st.success("Audio reset to original!")
 
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        """
-        <div style='text-align: center; color: gray;'>
-            <p>Audio Editor Pro | Made with Streamlit</p>
-            <p>Note: For YouTube downloads, please ensure you have the rights to use the content.</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+else:
+    st.info("👈 Please upload an audio file or provide a YouTube link to get started!")
+    
+    st.markdown("""
+    ### Features:
+    - ✂️ **Trim**: Cut audio to specific time range
+    - 🔗 **Merge**: Combine multiple audio files
+    - 🎚️ **Effects**: Adjust volume, speed, add fades, normalize, reverse
+    - 📊 **Export**: Download in MP3, WAV, or OGG format
+    - 🎥 **YouTube**: Download and edit audio from YouTube videos
+    """)
 
-if __name__ == "__main__":
-    main()
+# Footer
+st.divider()
+st.markdown("""
+    <div style='text-align: center; color: gray;'>
+        <p>Built with Streamlit | Audio processing powered by PyDub</p>
+    </div>
+""", unsafe_allow_html=True)
