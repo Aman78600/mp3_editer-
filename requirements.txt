@@ -2,3 +2,4 @@ streamlit==1.31.0
 pydub==0.25.1
 yt-dlp==2024.3.10
 ffmpeg-python==0.2.0
+PyAudio
