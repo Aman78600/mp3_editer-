@@ -111,26 +111,25 @@ def download_from_youtube(url):
             # Create temp directory
             temp_dir = tempfile.mkdtemp()
             
-            # Download using yt-dlp
+            # Download using yt-dlp with simpler settings
             ydl_opts = {
-                'format': 'bestaudio/best',
+                'format': 'bestaudio[ext=m4a]/bestaudio',
                 'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
+                'postprocessors': [],
             }
             
             with youtube_dl.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 audio_path = ydl.prepare_filename(info)
-                audio_path = audio_path.rsplit('.', 1)[0] + '.mp3'
             
-            # Load audio
-            audio = AudioSegment.from_file(audio_path)
+            # Load audio - try different formats
+            try:
+                audio = AudioSegment.from_file(audio_path)
+            except:
+                # If direct loading fails, convert to mp3
+                audio = AudioSegment.from_file(audio_path).set_frame_rate(44100).set_channels(2)
             
             # Clean up
             try:
@@ -142,6 +141,7 @@ def download_from_youtube(url):
     
     except Exception as e:
         st.error(f"Error downloading from YouTube: {str(e)}")
+        st.info("Tip: Make sure the YouTube URL is valid and the video is not age-restricted or private.")
         return None, None
 
 def process_audio_file(uploaded_file):
@@ -178,24 +178,27 @@ def apply_normalization(audio, target_dBFS):
 
 def get_download_link(audio, filename, format='mp3'):
     """Generate download link for audio file"""
-    # Export audio to bytes
-    buffer = BytesIO()
-    
-    if format == 'mp3':
-        audio.export(buffer, format='mp3', bitrate='192k')
-        mime_type = 'audio/mpeg'
-        file_ext = 'mp3'
-    elif format == 'wav':
-        audio.export(buffer, format='wav')
-        mime_type = 'audio/wav'
-        file_ext = 'wav'
-    
-    buffer.seek(0)
-    
-    # Create download link
-    b64 = base64.b64encode(buffer.read()).decode()
-    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{file_ext}">Download {file_ext.upper()}</a>'
-    return href
+    try:
+        # Export audio to bytes
+        buffer = BytesIO()
+        
+        if format == 'mp3':
+            audio.export(buffer, format='mp3', bitrate='192k')
+            mime_type = 'audio/mpeg'
+            file_ext = 'mp3'
+        elif format == 'wav':
+            audio.export(buffer, format='wav')
+            mime_type = 'audio/wav'
+            file_ext = 'wav'
+        
+        buffer.seek(0)
+        
+        # Create download link
+        b64 = base64.b64encode(buffer.read()).decode()
+        href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{file_ext}" style="display: inline-block; padding: 10px 20px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">Download {file_ext.upper()}</a>'
+        return href
+    except Exception as e:
+        return f"<p style='color: red;'>Error generating download link: {str(e)}</p>"
 
 def main():
     st.markdown('<h1 class="main-header">🎵 Audio Editor Pro</h1>', unsafe_allow_html=True)
@@ -229,7 +232,7 @@ def main():
         else:  # YouTube URL
             youtube_url = st.text_input("Enter YouTube URL:")
             if youtube_url:
-                if st.button("Download from YouTube"):
+                if st.button("Download from YouTube", use_container_width=True):
                     audio, title = download_from_youtube(youtube_url)
                     if audio is not None:
                         st.session_state.audio = audio
@@ -252,7 +255,11 @@ def main():
             st.write(f"**Frame Rate:** {frame_rate} Hz")
             
             # Quick preview
-            st.audio(st.session_state.audio.export(format='mp3').read())
+            try:
+                audio_bytes = st.session_state.audio.export(format='mp3').read()
+                st.audio(audio_bytes)
+            except:
+                st.warning("Could not generate audio preview")
     
     # Main editing interface
     if st.session_state.audio is not None:
@@ -284,7 +291,7 @@ def main():
                     key="trim_end"
                 )
             
-            if st.button("Apply Trim", key="trim_button"):
+            if st.button("Apply Trim", key="trim_button", use_container_width=True):
                 if start_time < end_time:
                     st.session_state.edited_audio = audio[start_time * 1000:end_time * 1000]
                     st.success(f"Audio trimmed to {start_time:.1f}s - {end_time:.1f}s")
@@ -322,7 +329,7 @@ def main():
                     100, 20000, 20000, 100
                 )
             
-            if st.button("Apply Effects", key="effects_button"):
+            if st.button("Apply Effects", key="effects_button", use_container_width=True):
                 edited = audio
                 
                 # Apply volume change
@@ -368,7 +375,7 @@ def main():
                     1.0, 10.0, 4.0, 0.1
                 )
             
-            if st.button("Apply Normalization", key="norm_button"):
+            if st.button("Apply Normalization", key="norm_button", use_container_width=True):
                 edited = apply_normalization(audio, target_level)
                 
                 if compression:
@@ -395,7 +402,7 @@ def main():
                     0.0, 10.0, 0.0, 0.1
                 )
             
-            if st.button("Apply Fade", key="fade_button"):
+            if st.button("Apply Fade", key="fade_button", use_container_width=True):
                 edited = apply_fade(audio, fade_in, fade_out)
                 st.session_state.edited_audio = edited
                 st.success(f"Fade In: {fade_in}s, Fade Out: {fade_out}s applied!")
@@ -419,11 +426,19 @@ def main():
         
         with col1:
             st.markdown("**Original Audio**")
-            st.audio(audio.export(format='mp3').read())
+            try:
+                audio_bytes = audio.export(format='mp3').read()
+                st.audio(audio_bytes)
+            except:
+                st.warning("Could not generate audio preview")
         
         with col2:
             st.markdown("**Edited Audio**")
-            st.audio(display_audio.export(format='mp3').read())
+            try:
+                edited_bytes = display_audio.export(format='mp3').read()
+                st.audio(edited_bytes)
+            except:
+                st.warning("Could not generate edited audio preview")
         
         # Download section
         st.markdown("---")
@@ -432,9 +447,10 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
+            default_name = Path(st.session_state.audio_file).stem if st.session_state.audio_file else "audio"
             filename = st.text_input(
                 "Download filename",
-                value=Path(st.session_state.audio_file).stem + "_edited"
+                value=default_name + "_edited"
             )
         
         with col2:
@@ -448,16 +464,22 @@ def main():
         
         with col1:
             st.markdown("**Download Original**")
-            original_link = get_download_link(audio, filename + "_original", format_choice)
-            st.markdown(original_link, unsafe_allow_html=True)
+            try:
+                original_link = get_download_link(audio, filename + "_original", format_choice)
+                st.markdown(original_link, unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Error creating download link: {str(e)}")
         
         with col2:
             st.markdown("**Download Edited**")
-            edited_link = get_download_link(display_audio, filename, format_choice)
-            st.markdown(edited_link, unsafe_allow_html=True)
+            try:
+                edited_link = get_download_link(display_audio, filename, format_choice)
+                st.markdown(edited_link, unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Error creating download link: {str(e)}")
         
         # Reset button
-        if st.button("Reset All Edits", type="secondary"):
+        if st.button("Reset All Edits", type="secondary", use_container_width=True):
             st.session_state.edited_audio = None
             st.rerun()
     
@@ -480,6 +502,14 @@ def main():
                     <li>Export in MP3 or WAV format</li>
                 </ul>
             </div>
+            <div style='margin-top: 30px; padding: 20px; background-color: #f5f5f5; border-radius: 10px;'>
+                <h4>⚠️ Important Notes:</h4>
+                <ul style='text-align: left; display: inline-block;'>
+                    <li>Max file size: 200MB</li>
+                    <li>YouTube downloads may not work for all videos</li>
+                    <li>Processing large files may take time</li>
+                </ul>
+            </div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -488,14 +518,33 @@ def main():
         col1, col2, col3 = st.columns(3)
         
         with col2:
-            if st.button("🎵 Try Sample Audio", type="primary"):
-                # Create a simple demo audio
-                from pydub.generators import Sine
-                st.info("Loading sample audio...")
+            if st.button("🎵 Try Sample Audio", type="primary", use_container_width=True):
+                # Create a simple demo audio without using generators
+                st.info("Creating sample audio...")
                 
-                # Generate a simple tone
-                tone = Sine(440).to_audio_segment(duration=3000)  # 3 second tone
-                st.session_state.audio = tone
+                # Create a simple tone using numpy
+                duration_ms = 3000  # 3 seconds
+                sample_rate = 44100
+                t = np.linspace(0, duration_ms/1000, int(sample_rate * duration_ms/1000), False)
+                
+                # Generate 440 Hz sine wave
+                tone_data = np.sin(2 * np.pi * 440 * t) * 32767 * 0.5
+                
+                # Convert to int16
+                tone_data = tone_data.astype(np.int16)
+                
+                # Create stereo audio
+                stereo_data = np.column_stack((tone_data, tone_data))
+                
+                # Create AudioSegment from numpy array
+                audio_segment = AudioSegment(
+                    stereo_data.tobytes(),
+                    frame_rate=sample_rate,
+                    sample_width=2,  # 16-bit = 2 bytes
+                    channels=2
+                )
+                
+                st.session_state.audio = audio_segment
                 st.session_state.audio_file = "sample_tone"
                 st.rerun()
 
